@@ -5,6 +5,7 @@ Usage: python predict.py "Текст для разметки"
 """
 
 import argparse
+import os
 import torch
 from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForTokenClassification
@@ -12,15 +13,22 @@ from transformers import AutoTokenizer, AutoModelForTokenClassification
 MODEL_DIR = "models/rubert-speech/best"
 
 
+def _pick_device() -> str:
+    requested = os.environ.get("SPEECH_DEVICE", "auto").lower()
+    if requested in ("auto", "cuda") and torch.cuda.is_available():
+        return "cuda"
+    if requested in ("auto", "mps") and torch.backends.mps.is_available():
+        return "mps"
+    if requested == "cuda":
+        return "cpu"
+    return "cpu"
+
+
 def load_model(model_dir: str):
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
     model = AutoModelForTokenClassification.from_pretrained(model_dir)
     model.eval()
-    device = (
-        "mps" if torch.backends.mps.is_available()
-        else "cuda" if torch.cuda.is_available()
-        else "cpu"
-    )
+    device = _pick_device()
     model.to(device)
     return tokenizer, model, device
 

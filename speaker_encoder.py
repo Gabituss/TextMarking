@@ -62,9 +62,13 @@ LORA_DROPOUT = 0.1
 
 
 def pick_device() -> str:
-    requested = os.environ.get("SPEECH_DEVICE", "mps").lower()
-    if requested == "mps" and torch.backends.mps.is_available():
+    requested = os.environ.get("SPEECH_DEVICE", "auto").lower()
+    if requested in ("auto", "cuda") and torch.cuda.is_available():
+        return "cuda"
+    if requested in ("auto", "mps") and torch.backends.mps.is_available():
         return "mps"
+    if requested == "cuda":
+        return "cpu"
     return "cpu"
 
 
@@ -206,15 +210,18 @@ def cmd_train(args):
     model[0].auto_model = get_peft_model(model[0].auto_model, peft_cfg)
     model[0].auto_model.print_trainable_parameters()
 
-    if device == "mps":
-        # НЕ включать здесь gradient checkpointing: на MPS backward с ним
-        # виснет (первый шаг не завершается за 10+ минут). Память экономим
-        # только батчем — см. --batch-size.
+    if device in ("mps", "cuda"):
+        # На MPS НЕ включать gradient checkpointing: backward с ним виснет
+        # (первый шаг не завершается за 10+ минут). Память экономим только
+        # батчем — см. --batch-size. На CUDA checkpointing включать можно,
+        # но LoRA и так обучает мало параметров, так что для совместимости
+        # поведения оставляем тот же подход.
 
         # Тот же инвариант, что в train.py: батчи фиксированной формы.
         # Динамический паддинг ST (padding=True → по самому длинному в батче)
-        # фрагментирует кэширующий аллокатор MPS и приводит к OOM задолго до
-        # реального исчерпания памяти. Паддим всё до MAX_SEQ_LENGTH.
+        # фрагментирует кэширующий аллокатор (особенно MPS, но и на CUDA это
+        # даёт ровный профиль памяти) и приводит к OOM задолго до реального
+        # исчерпания памяти. Паддим всё до MAX_SEQ_LENGTH.
         st_transformer = model[0]
         tokenizer = st_transformer.tokenizer
 
@@ -224,11 +231,16 @@ def cmd_train(args):
 
         st_transformer.tokenize = tokenize_fixed
 
+    def flush_cache():
+        if device == "mps":
+            torch.mps.empty_cache()
+        elif device == "cuda":
+            torch.cuda.empty_cache()
+
     if val_docs:
         print("До обучения:")
         eval_docs(model, val_docs, args.window)
-        if device == "mps":
-            torch.mps.empty_cache()
+        flush_cache()
 
     loader = DataLoader(triplets, shuffle=True, batch_size=args.batch_size)
     loss = losses.TripletLoss(

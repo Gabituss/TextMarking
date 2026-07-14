@@ -1,6 +1,7 @@
 """
 Fine-tune ruBERT for Author/Direct speech token classification.
-Runs on Apple Silicon GPU (MPS) by default; SPEECH_DEVICE=cpu to override.
+Device priority: CUDA (if available) → Apple Silicon GPU (MPS) → CPU.
+Override with SPEECH_DEVICE=cuda|mps|cpu.
 
 Memory strategy for MPS (24GB machine, must never swap):
 - Fixed-shape batches: every sample is padded to exactly MAX_LENGTH, so the
@@ -11,6 +12,8 @@ Memory strategy for MPS (24GB machine, must never swap):
   default high watermark is 1.7x recommended_max_memory (~30GB here), which
   silently spills into swap instead of failing.
 - Gradient checkpointing + periodic empty_cache keep the transient peak flat.
+On CUDA the fixed-shape batches and gradient checkpointing also keep memory
+flat; empty_cache runs on the same cadence as MPS.
 """
 
 import os
@@ -119,30 +122,49 @@ def compute_metrics(eval_pred):
     }
 
 
-class MPSCacheCallback(TrainerCallback):
-    """Release MPS cached buffers periodically and report driver memory."""
+class GPUCacheCallback(TrainerCallback):
+    """Release cached GPU buffers periodically and report driver memory."""
+    def __init__(self, device: str):
+        self.device = device
+        self._is_mps = device == "mps" and torch.backends.mps.is_available()
+        self._is_cuda = device == "cuda" and torch.cuda.is_available()
+
+    def _flush(self):
+        if self._is_mps:
+            torch.mps.empty_cache()
+        elif self._is_cuda:
+            torch.cuda.empty_cache()
+
+    def _report(self, step):
+        if self._is_mps:
+            mem = torch.mps.driver_allocated_memory() / 1e9
+            print(f"[mem] step {step}: driver_allocated={mem:.2f} GB", flush=True)
+        elif self._is_cuda:
+            alloc = torch.cuda.memory_allocated() / 1e9
+            reserved = torch.cuda.memory_reserved() / 1e9
+            print(f"[mem] step {step}: allocated={alloc:.2f} GB reserved={reserved:.2f} GB", flush=True)
 
     def on_step_end(self, args, state, control, **kwargs):
-        if torch.backends.mps.is_available() and state.global_step % EMPTY_CACHE_EVERY_N_STEPS == 0:
-            torch.mps.empty_cache()
-            driver = torch.mps.driver_allocated_memory() / 1e9
-            print(f"[mem] step {state.global_step}: driver_allocated={driver:.2f} GB", flush=True)
+        if (self._is_mps or self._is_cuda) and state.global_step % EMPTY_CACHE_EVERY_N_STEPS == 0:
+            self._flush()
+            self._report(state.global_step)
 
     def on_evaluate(self, args, state, control, **kwargs):
-        if torch.backends.mps.is_available():
-            torch.mps.empty_cache()
+        self._flush()
 
     def on_epoch_end(self, args, state, control, **kwargs):
-        if torch.backends.mps.is_available():
-            torch.mps.empty_cache()
+        self._flush()
 
 
 def pick_device() -> str:
-    requested = os.environ.get("SPEECH_DEVICE", "mps").lower()
-    if requested == "mps" and torch.backends.mps.is_available():
-        return "mps"
-    if requested == "cuda" and torch.cuda.is_available():
+    requested = os.environ.get("SPEECH_DEVICE", "auto").lower()
+    if requested in ("auto", "cuda") and torch.cuda.is_available():
         return "cuda"
+    if requested in ("auto", "mps") and torch.backends.mps.is_available():
+        return "mps"
+    if requested == "cuda":
+        # explicitly requested but unavailable: still fall back
+        return "cpu"
     return "cpu"
 
 
@@ -156,6 +178,9 @@ def main():
             f"MPS recommended_max_memory: {recommended:.1f} GB | "
             f"allocator capped at {recommended * high:.1f} GB"
         )
+    elif device == "cuda":
+        props = torch.cuda.get_device_properties(0)
+        print(f"CUDA: {props.name} | total={props.total_memory / 1e9:.1f} GB")
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForTokenClassification.from_pretrained(
@@ -183,9 +208,9 @@ def main():
         load_best_model_at_end=True,
         metric_for_best_model="f1",
         logging_steps=20,
-        fp16=False,
+        fp16=(device == "cuda"),
         gradient_checkpointing=True,
-        dataloader_pin_memory=False,
+        dataloader_pin_memory=(device == "cuda"),
         use_cpu=(device == "cpu"),
         report_to="none",
     )
@@ -198,7 +223,7 @@ def main():
         processing_class=tokenizer,
         data_collator=default_data_collator,
         compute_metrics=compute_metrics,
-        callbacks=[MPSCacheCallback()],
+        callbacks=[GPUCacheCallback(device)],
     )
 
     trainer.train()
