@@ -1,0 +1,16 @@
+venv/
+__pycache__/
+*.pyc
+
+# Trained models (too large for git)
+models/
+checkpoints/
+
+# macOS
+.DS_Store
+
+# Generated outputs
+res.txt
+result.json
+result.txt
+text.txt

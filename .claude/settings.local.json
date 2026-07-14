@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 preprocess.py)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -m venv /Users/gabit/PyCharmProjects/TextMarking/venv)",
+      "Bash(/Users/gabit/PyCharmProjects/TextMarking/venv/bin/pip install *)",
+      "Bash(venv/bin/python train.py)",
+      "Bash(PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.7 venv/bin/python train.py)",
+      "Bash(memory_pressure)",
+      "Bash(vm_stat)",
+      "Bash(ps -A -o rss,comm)",
+      "Bash(awk '{printf \"%.1f GB\\\\t%s\\\\n\", $1/1024/1024, $2}')",
+      "WebSearch",
+      "WebFetch(domain:docs.pytorch.org)",
+      "Bash(venv/bin/python -c ' *)",
+      "Bash(awk '/Swapouts/{print \"baseline swapouts:\", $2}')",
+      "Bash(echo \"started PID $!\")",
+      "Bash(sed -n '1,20p' /tmp/train_run.log 2>/dev/null | grep -aE \"Device|MPS recommended|capping|Train:|Error|Traceback\" || echo \"\\(no key lines yet\\)\")",
+      "Read(//private/tmp/**)",
+      "Bash(pkill -f train.py)",
+      "Bash(pkill -f train.py 2>/dev/null; sleep 1 *)",
+      "Bash(SPEECH_DEVICE=cpu venv/bin/python predict.py \"Солдат пришёл к старухе и говорит: «Дай-ка мне поесть!» Старуха молчала.\")"
+    ],
+    "additionalDirectories": [
+      "/private/tmp"
+    ]
+  }
+}
